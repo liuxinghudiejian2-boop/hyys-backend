@@ -598,25 +598,27 @@ def api_register():
     """用户注册"""
     if request.method == "OPTIONS":
         return jsonify({"ok": True})
-    data = request.get_json(silent=True) or {}
-    username = (data.get("username") or "").strip()
-    password = data.get("password") or ""
+    try:
+        data = request.get_json(silent=True) or {}
+        username = (data.get("username") or "").strip()
+        password = data.get("password") or ""
 
-    if not username or not password:
-        return jsonify({"success": False, "error": "请输入用户名和密码"})
-    if len(username) < 2:
-        return jsonify({"success": False, "error": "用户名至少 2 个字符"})
-    if len(password) < 4:
-        return jsonify({"success": False, "error": "密码至少 4 位"})
-    if username == STAFF_ACCOUNT:
-        return jsonify({"success": False, "error": "该用户名已被保留"})
+        if not username or not password:
+            return jsonify({"success": False, "error": "请输入用户名和密码"})
+        if len(username) < 2:
+            return jsonify({"success": False, "error": "用户名至少 2 个字符"})
+        if len(password) < 4:
+            return jsonify({"success": False, "error": "密码至少 4 位"})
 
-    users = db.get_user(username)
-    if users:
-        return jsonify({"success": False, "error": "用户名已存在"})
+        users = db.get_user(username)
+        if users:
+            return jsonify({"success": False, "error": "用户名已存在"})
 
-    db.create_user(username, hash_password(password), "user")
-    return jsonify({"success": True, "message": "注册成功"})
+        db.create_user(username, hash_password(password), "user")
+        return jsonify({"success": True, "message": "注册成功"})
+    except Exception as e:
+        import traceback
+        return jsonify({"success": False, "error": str(e), "trace": traceback.format_exc()}), 500
 
 
 @app.route("/api/login", methods=["POST", "OPTIONS"])
