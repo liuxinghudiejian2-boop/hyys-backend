@@ -20,6 +20,7 @@ import json
 import time
 import hashlib
 from urllib.parse import urlparse, parse_qs, quote, unquote
+import db  # SQLite 数据库（持久化，冷启动不丢失）
 
 import requests
 from flask import Flask, request, jsonify, Response, send_file
@@ -519,80 +520,9 @@ def api_public_ip():
     return jsonify({"ip": client_ip})
 
 
-# ============================== 数据存储（图库 / 收件箱 / 用户） ==============================
+# ============================== 配置 ==============================
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-GALLERY_FILE = os.path.join(BASE_DIR, "gallery_data.json")
-INBOX_FILE = os.path.join(BASE_DIR, "inbox_data.json")
-USERS_FILE = os.path.join(BASE_DIR, "users_data.json")
-CHAT_FILE = os.path.join(BASE_DIR, "chat_data.json")
-
-# 客服固定账号
-STAFF_ACCOUNT = "12356789"
-STAFF_PASSWORD = "11111111"
-
-DEFAULT_GALLERY = [
-    {"id": 1, "title": "晨曦微光", "s": "柔和暖调", "grad": 0, "url": "", "srcTag": ""},
-    {"id": 2, "title": "黛蓝夜色", "s": "冷调质感", "grad": 1, "url": "", "srcTag": ""},
-    {"id": 3, "title": "绯樱", "s": "粉调清新", "grad": 2, "url": "", "srcTag": ""},
-    {"id": 4, "title": "薄荷海风", "s": "清透蓝绿", "grad": 3, "url": "", "srcTag": ""},
-    {"id": 5, "title": "暖阳沙滩", "s": "金调度假", "grad": 4, "url": "", "srcTag": ""},
-    {"id": 6, "title": "云端漫步", "s": "渐变天空", "grad": 5, "url": "", "srcTag": ""},
-    {"id": 7, "title": "日落黄昏", "s": "橙调温柔", "grad": 6, "url": "", "srcTag": ""},
-    {"id": 8, "title": "初春嫩芽", "s": "生机绿调", "grad": 7, "url": "", "srcTag": ""},
-]
-
-
-def _load_json(path, default):
-    try:
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-    except Exception:
-        pass
-    return default
-
-
-def _save_json(path, data):
-    try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        return True
-    except Exception as e:
-        print(f"[存储] 保存失败: {e}")
-        return False
-
-
-def get_gallery():
-    data = _load_json(GALLERY_FILE, None)
-    if data is None:
-        data = list(DEFAULT_GALLERY)
-        _save_json(GALLERY_FILE, data)
-    return data
-
-
-def get_inbox():
-    return _load_json(INBOX_FILE, [])
-
-
-# ============================== 用户认证 ==============================
-
-def hash_password(pwd):
-    """密码哈希（sha256 + 固定盐）"""
-    return hashlib.sha256(f"mg_salt_{pwd}".encode()).hexdigest()
-
-
-def get_users():
-    """获取用户数据，首次运行时预置客服账号"""
-    users = _load_json(USERS_FILE, None)
-    if users is None:
-        users = {STAFF_ACCOUNT: {"password": hash_password(STAFF_PASSWORD), "role": "staff", "name": "客服"}}
-        _save_json(USERS_FILE, users)
-    # 确保客服账号始终存在
-    if STAFF_ACCOUNT not in users:
-        users[STAFF_ACCOUNT] = {"password": hash_password(STAFF_PASSWORD), "role": "staff", "name": "客服"}
-        _save_json(USERS_FILE, users)
-    return users
+class Config:
 
 
 @app.route("/api/register", methods=["POST", "OPTIONS"])
@@ -613,12 +543,11 @@ def api_register():
     if username == STAFF_ACCOUNT:
         return jsonify({"success": False, "error": "该用户名已被保留"})
 
-    users = get_users()
-    if username in users:
+    users = db.get_user(username)
+    if users:
         return jsonify({"success": False, "error": "用户名已存在"})
 
-    users[username] = {"password": hash_password(password), "role": "user", "name": username}
-    _save_json(USERS_FILE, users)
+    db.create_user(username, hash_password(password), "user")
     return jsonify({"success": True, "message": "注册成功"})
 
 
@@ -634,16 +563,16 @@ def api_login():
     if not username or not password:
         return jsonify({"success": False, "error": "请输入用户名和密码"})
 
-    users = get_users()
-    if username not in users:
+    users = db.get_user(username)
+    if not users:
         return jsonify({"success": False, "error": "用户不存在，请先注册"})
-    if users[username]["password"] != hash_password(password):
+    if users["password"] != hash_password(password):
         return jsonify({"success": False, "error": "密码错误"})
 
     return jsonify({
         "success": True,
-        "role": users[username]["role"],
-        "username": users[username].get("name", username),
+        "role": users["role"],
+        "username": users.get("name", username),
     })
 
 
@@ -658,7 +587,7 @@ def check_staff_password(data):
 @app.route("/api/gallery", methods=["GET"])
 def api_gallery_list():
     """获取图库列表（所有用户共享）"""
-    return jsonify({"success": True, "gallery": get_gallery()})
+    return jsonify({"success": True, "gallery": db.get_gallery()})
 
 
 @app.route("/api/gallery", methods=["POST", "OPTIONS"])
@@ -686,9 +615,7 @@ def api_gallery_add():
         "hobby": (data.get("hobby") or "").strip(),
         "bwh": (data.get("bwh") or "").strip(),
     }
-    gallery = get_gallery()
-    gallery.insert(0, item)
-    _save_json(GALLERY_FILE, gallery)
+    db.add_gallery_item(item)
     return jsonify({"success": True, "item": item})
 
 
@@ -701,11 +628,9 @@ def api_gallery_delete(item_id):
     pwd = request.args.get("password") or ""
     if pwd != STAFF_PASSWORD:
         return jsonify({"success": False, "error": "无权限：需要客服密码"})
-    gallery = get_gallery()
-    new_gallery = [x for x in gallery if int(x.get("id", 0)) != item_id]
-    if len(new_gallery) == len(gallery):
+    deleted = db.delete_gallery_item(item_id)
+    if not deleted:
         return jsonify({"success": False, "error": "图片不存在"})
-    _save_json(GALLERY_FILE, new_gallery)
     return jsonify({"success": True})
 
 
@@ -714,7 +639,7 @@ def api_gallery_delete(item_id):
 @app.route("/api/inbox", methods=["GET"])
 def api_inbox_list():
     """获取收件箱列表（客服查看用户上传）"""
-    return jsonify({"success": True, "inbox": get_inbox()})
+    return jsonify({"success": True, "inbox": db.get_inbox()})
 
 
 @app.route("/api/inbox", methods=["POST", "OPTIONS"])
@@ -724,26 +649,15 @@ def api_inbox_add():
         return jsonify({"ok": True})
     data = request.get_json(silent=True) or {}
     items = data.get("items", [])
-    inbox = get_inbox()
-    base = int(time.time() * 1000)
-    for i, it in enumerate(items):
-        inbox.append({
-            "id": base + i,
-            "title": it.get("title", "美图"),
-            "grad": int(it.get("grad", 0)),
-            "url": it.get("url", ""),
-            "from": it.get("from", "用户"),
-            "username": it.get("username", ""),
-        })
-    _save_json(INBOX_FILE, inbox)
+    db.add_inbox_items(items)
     return jsonify({"success": True, "added": len(items)})
 
 
 def _extract_username(item):
-    """从收件箱条目提取用户名"""
+    """从收件箱条目提取用户名（兼容新旧字段名）"""
     if item.get("username"):
         return item["username"]
-    from_str = item.get("from", "")
+    from_str = item.get("inbox_from", "") or item.get("from", "")
     parts = from_str.split("\u00b7")
     return parts[-1].strip() if len(parts) > 1 else from_str
 
@@ -759,35 +673,21 @@ def api_inbox_delete():
         return jsonify({"success": False, "error": "无权限：需要客服密码"})
     username = (data.get("username") or "").strip()
     item_id = data.get("id")
-    inbox = get_inbox()
-    original_len = len(inbox)
     if username:
-        new_inbox = [it for it in inbox if _extract_username(it) != username]
+        deleted = db.delete_inbox_by_username(username)
     elif item_id:
-        new_inbox = [it for it in inbox if it.get("id") != item_id]
+        deleted = db.delete_inbox_by_id(item_id)
     else:
         return jsonify({"success": False, "error": "需要指定删除的用户或记录ID"})
-    _save_json(INBOX_FILE, new_inbox)
-    deleted = original_len - len(new_inbox)
     return jsonify({"success": True, "deleted": deleted})
 
 
 # ============================== 聊天接口 ==============================
 
-def get_chat():
-    return _load_json(CHAT_FILE, {})
-
-
-def save_chat(data):
-    _save_json(CHAT_FILE, data)
-
-
 @app.route("/api/chat/<username>", methods=["GET"])
 def api_chat_list(username):
     """获取与某用户的聊天记录"""
-    chat = get_chat()
-    messages = chat.get(username, [])
-    return jsonify({"success": True, "messages": messages})
+    return jsonify({"success": True, "messages": db.get_chat(username)})
 
 
 @app.route("/api/chat/<username>", methods=["POST", "OPTIONS"])
@@ -801,24 +701,15 @@ def api_chat_send(username):
     if not text:
         return jsonify({"success": False, "error": "消息不能为空"}), 400
 
-    chat = get_chat()
-    if username not in chat:
-        chat[username] = []
     msg_id = int(time.time() * 1000)
-    chat[username].append({
-        "id": msg_id,
-        "sender": sender,
-        "text": text,
-        "time": msg_id,
-    })
-    save_chat(chat)
-    return jsonify({"success": True, "message": chat[username][-1]})
+    db.add_chat_message(username, sender, text, msg_id)
+    return jsonify({"success": True, "message": {"id": msg_id, "sender": sender, "text": text, "time": msg_id}})
 
 
 @app.route("/api/user-likes/<username>", methods=["GET"])
 def api_user_likes(username):
     """获取某用户上传到收件箱的图片（即用户喜欢的图）"""
-    inbox = get_inbox()
+    inbox = db.get_inbox()
     likes = [it for it in inbox if _extract_username(it) == username]
     return jsonify({"success": True, "likes": likes})
 
@@ -876,7 +767,7 @@ def api_upload_imgbb():
 @app.route("/", methods=["GET"])
 def index():
     """托管前端原型页面，手机访问 http://电脑IP:5000/ 即可打开"""
-    html_path = os.path.join(BASE_DIR, "beauty-gallery-prototype.html")
+    html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "beauty-gallery-prototype.html")
     if os.path.exists(html_path):
         return send_file(html_path)
     return "原型文件 beauty-gallery-prototype.html 未找到", 404
