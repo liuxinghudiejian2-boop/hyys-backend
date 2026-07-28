@@ -62,6 +62,10 @@ def add_cors_headers(resp):
 
 # ============================== 配置 ==============================
 
+# 客服图库写操作密码（请勿泄露）
+STAFF_PASSWORD = os.environ.get("STAFF_PASSWORD", "11111111")
+
+
 class Config:
     BAIDU_PAN_BASE = "https://pan.baidu.com"
     USER_AGENT = (
