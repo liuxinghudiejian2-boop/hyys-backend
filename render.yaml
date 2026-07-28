@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: hyys-backend
+    env: python
+    region: oregon
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app.py
+    healthCheckPath: /api/health
