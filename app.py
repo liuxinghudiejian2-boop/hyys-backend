@@ -394,61 +394,6 @@ def parse_baidu_share(url, code):
     }
 
 
-# ============================== 诊断端点 ==============================
-
-@app.route("/api/debug/db", methods=["GET"])
-def api_debug_db():
-    """诊断数据库是否正常工作"""
-    try:
-        user = db.get_user("12356789")
-        return jsonify({"success": True, "user_found": user is not None, "user": user})
-    except Exception as e:
-        import traceback
-        return jsonify({"success": False, "error": str(e), "trace": traceback.format_exc()})
-
-
-@app.route("/api/debug/login", methods=["POST", "OPTIONS"])
-def api_debug_login():
-    """模拟登录逻辑诊断"""
-    try:
-        data = request.get_json(silent=True) or {}
-        username = (data.get("username") or "").strip()
-        password = data.get("password") or ""
-        hp = hash_password(password)
-        user = db.get_user(username)
-        return jsonify({
-            "success": True,
-            "data_received": data,
-            "username": username,
-            "password_len": len(password),
-            "hash_len": len(hp),
-            "user": user,
-        })
-    except Exception as e:
-        import traceback
-        return jsonify({"success": False, "error": str(e), "trace": traceback.format_exc()})
-
-
-@app.route("/api/debug/ping", methods=["GET"])
-def api_debug_ping():
-    """测试各图床服务是否从 Render 可达"""
-    results = {}
-    targets = {
-        "imgbb_direct": "https://api.imgbb.com/1/upload?key=46da64c4ed5006f1c007a094443c650d",
-        "smms": "https://sm.ms/api/v2/upload",
-        "catbox": "https://catbox.moe/user/api.php",
-        "lpic": "https://lpic.cc/api/upload",
-        "freeimage": "https://freeimage.host/api/1/upload",
-    }
-    for name, url in targets.items():
-        try:
-            r = requests.head(url, timeout=5)
-            results[name] = {"status": r.status_code, "reachable": True}
-        except Exception as e:
-            results[name] = {"error": str(e)[:100], "reachable": False}
-    return jsonify({"success": True, "ping_results": results})
-
-
 # ============================== Flask 路由 ==============================
 
 @app.route("/api/parse", methods=["POST", "OPTIONS"])
