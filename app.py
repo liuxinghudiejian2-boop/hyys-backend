@@ -823,6 +823,54 @@ def api_user_likes(username):
     return jsonify({"success": True, "likes": likes})
 
 
+# ============================== ImgBB 上传中转 ==============================
+
+IMGBB_WORKER_URL = os.environ.get(
+    "IMGBB_WORKER_URL",
+    "https://imgbb-proxy.imgbb-proxy.workers.dev"
+)
+
+
+@app.route("/api/upload-imgbb", methods=["POST", "OPTIONS"])
+def api_upload_imgbb():
+    """
+    接收前端图片 → 转发到 Cloudflare Worker → ImgBB → 返回直链
+
+    请求体: {"image": "<base64 编码的图片数据>"}
+    响应:   {"success": true, "url": "https://i.ibb.co/xxx/xxx.jpg"}
+            或 {"success": false, "error": "..."}
+    """
+    if request.method == "OPTIONS":
+        return jsonify({"ok": True})
+
+    data = request.get_json(silent=True) or {}
+    image_b64 = data.get("image", "").strip()
+
+    if not image_b64:
+        return jsonify({"success": False, "error": "缺少图片数据"})
+
+    try:
+        # 通过 Cloudflare Worker 转发到 ImgBB（Worker 持有 API Key 环境变量）
+        resp = requests.post(
+            IMGBB_WORKER_URL,
+            data={"image": image_b64},
+            timeout=30,
+        )
+        result = resp.json()
+
+        if result.get("success"):
+            return jsonify({"success": True, "url": result["data"]["url"]})
+        else:
+            error_msg = result.get("error", {}).get("message", "ImgBB 上传失败")
+            return jsonify({"success": False, "error": error_msg})
+
+    except requests.exceptions.Timeout:
+        return jsonify({"success": False, "error": "上传超时，图片可能过大"})
+    except Exception as e:
+        print(f"[IMGBB ERROR] {e}")
+        return jsonify({"success": False, "error": f"上传异常: {e}"})
+
+
 # ============================== 托管前端页面 ==============================
 
 @app.route("/", methods=["GET"])
@@ -855,6 +903,7 @@ if __name__ == "__main__":
     print("    GET  /api/user-likes/<username> - 获取用户喜欢的图片")
     print("    POST /api/parse          - 解析百度网盘分享链接")
     print("    GET  /api/proxy          - 图片代理（仅限百度域名）")
+    print("    POST /api/upload-imgbb   - 上传图片到 ImgBB 图床（中转）")
     print("    GET  /api/health         - 健康检查")
     print("-" * 55)
     print("  手机访问: 确保手机与电脑连同一 WiFi，浏览器打开")
