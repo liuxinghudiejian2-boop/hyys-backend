@@ -429,6 +429,26 @@ def api_debug_login():
         return jsonify({"success": False, "error": str(e), "trace": traceback.format_exc()})
 
 
+@app.route("/api/debug/ping", methods=["GET"])
+def api_debug_ping():
+    """测试各图床服务是否从 Render 可达"""
+    results = {}
+    targets = {
+        "imgbb_direct": "https://api.imgbb.com/1/upload?key=46da64c4ed5006f1c007a094443c650d",
+        "smms": "https://sm.ms/api/v2/upload",
+        "catbox": "https://catbox.moe/user/api.php",
+        "lpic": "https://lpic.cc/api/upload",
+        "freeimage": "https://freeimage.host/api/1/upload",
+    }
+    for name, url in targets.items():
+        try:
+            r = requests.head(url, timeout=5)
+            results[name] = {"status": r.status_code, "reachable": True}
+        except Exception as e:
+            results[name] = {"error": str(e)[:100], "reachable": False}
+    return jsonify({"success": True, "ping_results": results})
+
+
 # ============================== Flask 路由 ==============================
 
 @app.route("/api/parse", methods=["POST", "OPTIONS"])
