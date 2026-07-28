@@ -389,6 +389,19 @@ def parse_baidu_share(url, code):
     }
 
 
+# ============================== 诊断端点 ==============================
+
+@app.route("/api/debug/db", methods=["GET"])
+def api_debug_db():
+    """诊断数据库是否正常工作"""
+    try:
+        user = db.get_user("12356789")
+        return jsonify({"success": True, "user_found": user is not None, "user": user})
+    except Exception as e:
+        import traceback
+        return jsonify({"success": False, "error": str(e), "trace": traceback.format_exc()})
+
+
 # ============================== Flask 路由 ==============================
 
 @app.route("/api/parse", methods=["POST", "OPTIONS"])
