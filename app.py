@@ -22,6 +22,11 @@ import hashlib
 from urllib.parse import urlparse, parse_qs, quote, unquote
 import db  # SQLite 数据库（持久化，冷启动不丢失）
 
+
+def hash_password(pwd):
+    """密码哈希（sha256 + 固定盐）"""
+    return hashlib.sha256(f"mg_salt_{pwd}".encode()).hexdigest()
+
 import requests
 from flask import Flask, request, jsonify, Response, send_file
 
