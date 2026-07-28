@@ -69,8 +69,9 @@ class Config:
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/120.0.0.0 Safari/537.36"
     )
-    # 图片代理缓存（秒）
     PROXY_CACHE_TIME = 3600
+    # 图片代理缓存（秒）—— 24 小时，浏览器第二次访问直接命中本地缓存
+    IMAGE_CACHE_TIME = 86400
     # 解析结果缓存 {key: {result, ts}}
     PARSE_CACHE = {}
     PARSE_CACHE_TTL = 1800  # 30 分钟
@@ -506,6 +507,75 @@ def api_proxy():
         return f"Proxy error: {e}", 500
 
 
+@app.route("/api/img-cache", methods=["GET"])
+def api_img_cache():
+    """
+    图片代理 + 24 小时浏览器缓存
+
+    支持：
+      - catbox.moe
+      - freeimage.host
+      - 其他外链图床
+
+    原理：后端从图床拉取图片后返回给浏览器，
+    响应头设置 Cache-Control: public, max-age=86400，
+    浏览器第二次访问同一 URL 直接从本地缓存读取，不再请求网络。
+    """
+    target_url = request.args.get("url", "")
+    if not target_url:
+        return "Missing 'url' parameter", 400
+
+    # SSRF 防护：只允许代理指定的图床域名
+    parsed = urlparse(target_url)
+    allowed_domains = (
+        "catbox.moe",
+        "catbox.moe.files",
+        "freeimage.host",
+        "i.imgur.com",
+        "imgbb.com",
+        "i.ibb.co",
+        "sm.ms",
+        "i.imgur.com",
+        "litter.catbox.moe",
+    )
+    if not any(parsed.hostname and parsed.hostname.endswith(d) for d in allowed_domains):
+        return f"Forbidden: domain not allowed -> {parsed.hostname}", 403
+
+    try:
+        session = create_session()
+        # 增加超时，避免大图卡死
+        resp = session.get(target_url, timeout=Config.TIMEOUT)
+
+        if resp.status_code != 200:
+            return f"Failed to fetch image: HTTP {resp.status_code}", 502
+
+        content_type = resp.headers.get("Content-Type", "image/jpeg")
+        content = resp.content
+        resp.close()
+
+        if not content:
+            return "Empty image data", 502
+
+        response = Response(
+            content,
+            content_type=content_type,
+        )
+        # 关键：设置 24 小时缓存，第二次访问浏览器直接命中本地缓存
+        response.headers["Cache-Control"] = f"public, max-age={Config.IMAGE_CACHE_TIME}"
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        # ETag 用于条件请求（304 Not Modified）
+        import hashlib as _hl
+        etag = _hl.md5(content[:8192]).hexdigest()
+        response.headers["ETag"] = f'"{etag}"'
+
+        return response
+    except requests.exceptions.Timeout:
+        return "Proxy timeout", 504
+    except Exception as e:
+        print(f"[IMG-CACHE ERROR] {e}")
+        return f"Proxy error: {e}", 500
+
+
 @app.route("/api/health", methods=["GET"])
 def api_health():
     """健康检查"""
@@ -525,37 +595,7 @@ def api_public_ip():
     return jsonify({"ip": client_ip})
 
 
-# ============================== 配置 ==============================
-
-class Config:
-    BAIDU_PAN_BASE = "https://pan.baidu.com"
-    USER_AGENT = (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    )
-    PROXY_CACHE_TIME = 3600
-    PARSE_CACHE = {}
-    PARSE_CACHE_TTL = 1800
-    TIMEOUT = 15
-
-
-# 支持的图片扩展名
-IMAGE_EXTENSIONS = {
-    ".jpg", ".jpeg", ".png", ".webp",
-    ".gif", ".bmp", ".tiff", ".heic",
-}
-
-# errno 错误码映射
-ERRNO_MAP = {
-    -12:   "提取码错误",
-    -130:  "提取码错误",
-    -62:   "请求过于频繁，请稍后重试",
-    2:     "分享链接已过期或已删除",
-    31066: "分享文件不存在",
-    31034: "分享链接已失效",
-    9019:  "分享链接已过期",
-}
+# ============================== 注册 / 登录 ==============================
 
 
 @app.route("/api/register", methods=["POST", "OPTIONS"])
