@@ -816,13 +816,74 @@ IMGBB_WORKER_URL = os.environ.get(
 )
 
 
+def _try_upload_image(image_b64):
+    """
+    尝试多个图床上传，返回第一个成功的 URL。
+    优先级: Catbox > Freeimage > ImgBB Worker
+    """
+    # --- 方法1: Catbox (无需认证，200MB 限制) ---
+    try:
+        import base64
+        img_data = base64.b64decode(image_b64 + "==")
+        resp = requests.post(
+            "https://catbox.moe/user/api.php",
+            files={"fileToUpload": ("image.png", img_data, "image/png")},
+            data={"reqtype": "fileupload"},
+            timeout=30,
+        )
+        url = resp.text.strip()
+        if url.startswith("https://"):
+            print(f"[上传] Catbox 成功: {url[:60]}")
+            return url
+    except Exception as e:
+        print(f"[上传] Catbox 失败: {e}")
+
+    # --- 方法2: Freeimage (匿名 key=free) ---
+    try:
+        import base64
+        img_data = base64.b64decode(image_b64 + "==")
+        resp = requests.post(
+            "https://freeimage.host/api/1/upload",
+            files={"source": ("image.png", img_data, "image/png")},
+            data={"key": "free"},
+            timeout=30,
+        )
+        result = resp.json()
+        if result.get("status_code") == 200:
+            url = result.get("image", {}).get("url") or result.get("url", "")
+            if url:
+                print(f"[上传] Freeimage 成功: {url[:60]}")
+                return url
+    except Exception as e:
+        print(f"[上传] Freeimage 失败: {e}")
+
+    # --- 方法3: Cloudflare Worker -> ImgBB (作为最后兜底) ---
+    try:
+        resp = requests.post(
+            IMGBB_WORKER_URL,
+            data={"image": image_b64},
+            timeout=30,
+        )
+        result = resp.json()
+        if result.get("success"):
+            url = result.get("data", {}).get("url", "")
+            if url:
+                print(f"[上传] ImgBB 成功: {url[:60]}")
+                return url
+    except Exception as e:
+        print(f"[上传] ImgBB 失败: {e}")
+
+    return None
+
+
 @app.route("/api/upload-imgbb", methods=["POST", "OPTIONS"])
 def api_upload_imgbb():
     """
-    接收前端图片 → 转发到 Cloudflare Worker → ImgBB → 返回直链
+    接收前端图片 → 通过多图床上传 → 返回直链
+    自动尝试 Catbox / Freeimage / ImgBB，回退到最近的可用服务。
 
     请求体: {"image": "<base64 编码的图片数据>"}
-    响应:   {"success": true, "url": "https://i.ibb.co/xxx/xxx.jpg"}
+    响应:   {"success": true, "url": "https://..."}
             或 {"success": false, "error": "..."}
     """
     if request.method == "OPTIONS":
@@ -835,22 +896,11 @@ def api_upload_imgbb():
         return jsonify({"success": False, "error": "缺少图片数据"})
 
     try:
-        # 通过 Cloudflare Worker 转发到 ImgBB（Worker 持有 API Key 环境变量）
-        resp = requests.post(
-            IMGBB_WORKER_URL,
-            data={"image": image_b64},
-            timeout=30,
-        )
-        result = resp.json()
-
-        if result.get("success"):
-            return jsonify({"success": True, "url": result["data"]["url"]})
+        url = _try_upload_image(image_b64)
+        if url:
+            return jsonify({"success": True, "url": url})
         else:
-            error_msg = result.get("error", {}).get("message", "ImgBB 上传失败")
-            return jsonify({"success": False, "error": error_msg})
-
-    except requests.exceptions.Timeout:
-        return jsonify({"success": False, "error": "上传超时，图片可能过大"})
+            return jsonify({"success": False, "error": "所有图床均上传失败，请稍后重试"})
     except Exception as e:
         print(f"[IMGBB ERROR] {e}")
         return jsonify({"success": False, "error": f"上传异常: {e}"})
