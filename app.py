@@ -402,6 +402,28 @@ def api_debug_db():
         return jsonify({"success": False, "error": str(e), "trace": traceback.format_exc()})
 
 
+@app.route("/api/debug/login", methods=["POST", "OPTIONS"])
+def api_debug_login():
+    """模拟登录逻辑诊断"""
+    try:
+        data = request.get_json(silent=True) or {}
+        username = (data.get("username") or "").strip()
+        password = data.get("password") or ""
+        hp = hash_password(password)
+        user = db.get_user(username)
+        return jsonify({
+            "success": True,
+            "data_received": data,
+            "username": username,
+            "password_len": len(password),
+            "hash_len": len(hp),
+            "user": user,
+        })
+    except Exception as e:
+        import traceback
+        return jsonify({"success": False, "error": str(e), "trace": traceback.format_exc()})
+
+
 # ============================== Flask 路由 ==============================
 
 @app.route("/api/parse", methods=["POST", "OPTIONS"])
@@ -597,24 +619,28 @@ def api_login():
     """用户登录（普通用户 + 客服统一入口）"""
     if request.method == "OPTIONS":
         return jsonify({"ok": True})
-    data = request.get_json(silent=True) or {}
-    username = (data.get("username") or "").strip()
-    password = data.get("password") or ""
+    try:
+        data = request.get_json(silent=True) or {}
+        username = (data.get("username") or "").strip()
+        password = data.get("password") or ""
 
-    if not username or not password:
-        return jsonify({"success": False, "error": "请输入用户名和密码"})
+        if not username or not password:
+            return jsonify({"success": False, "error": "请输入用户名和密码"})
 
-    users = db.get_user(username)
-    if not users:
-        return jsonify({"success": False, "error": "用户不存在，请先注册"})
-    if users["password"] != hash_password(password):
-        return jsonify({"success": False, "error": "密码错误"})
+        users = db.get_user(username)
+        if not users:
+            return jsonify({"success": False, "error": "用户不存在，请先注册"})
+        if users["password"] != hash_password(password):
+            return jsonify({"success": False, "error": "密码错误"})
 
-    return jsonify({
-        "success": True,
-        "role": users["role"],
-        "username": users.get("name", username),
-    })
+        return jsonify({
+            "success": True,
+            "role": users["role"],
+            "username": users.get("name", username),
+        })
+    except Exception as e:
+        import traceback
+        return jsonify({"success": False, "error": str(e), "trace": traceback.format_exc()}), 500
 
 
 def check_staff_password(data):
