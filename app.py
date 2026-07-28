@@ -535,7 +535,6 @@ def api_img_cache():
         "imgbb.com",
         "i.ibb.co",
         "sm.ms",
-        "i.imgur.com",
         "litter.catbox.moe",
     )
     if not any(parsed.hostname and parsed.hostname.endswith(d) for d in allowed_domains):
