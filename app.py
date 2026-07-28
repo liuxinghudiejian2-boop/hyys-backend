@@ -718,10 +718,29 @@ def api_gallery_delete(item_id):
 
 # ============================== 收件箱接口 ==============================
 
+@app.route("/api/inbox/unread-count", methods=["GET"])
+def api_inbox_unread_count():
+    """返回收件箱未读条目数量（客服用）"""
+    count = db.get_inbox_unread_count()
+    return jsonify({"success": True, "unread": count})
+
+
+@app.route("/api/inbox/mark-read", methods=["POST", "OPTIONS"])
+def api_inbox_mark_read():
+    """标记收件箱已读（客服点开收件箱时调用）"""
+    if request.method == "OPTIONS":
+        return jsonify({"ok": True})
+    import time
+    db.set_inbox_last_read(int(time.time()))
+    return jsonify({"success": True})
+
+
 @app.route("/api/inbox", methods=["GET"])
 def api_inbox_list():
     """获取收件箱列表（客服查看用户上传）"""
-    return jsonify({"success": True, "inbox": db.get_inbox()})
+    inbox = db.get_inbox()
+    unread = db.get_inbox_unread_count()
+    return jsonify({"success": True, "inbox": inbox, "unread": unread})
 
 
 @app.route("/api/inbox", methods=["POST", "OPTIONS"])
