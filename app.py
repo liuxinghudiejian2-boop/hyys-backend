@@ -523,6 +523,34 @@ def api_public_ip():
 # ============================== 配置 ==============================
 
 class Config:
+    BAIDU_PAN_BASE = "https://pan.baidu.com"
+    USER_AGENT = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    )
+    PROXY_CACHE_TIME = 3600
+    PARSE_CACHE = {}
+    PARSE_CACHE_TTL = 1800
+    TIMEOUT = 15
+
+
+# 支持的图片扩展名
+IMAGE_EXTENSIONS = {
+    ".jpg", ".jpeg", ".png", ".webp",
+    ".gif", ".bmp", ".tiff", ".heic",
+}
+
+# errno 错误码映射
+ERRNO_MAP = {
+    -12:   "提取码错误",
+    -130:  "提取码错误",
+    -62:   "请求过于频繁，请稍后重试",
+    2:     "分享链接已过期或已删除",
+    31066: "分享文件不存在",
+    31034: "分享链接已失效",
+    9019:  "分享链接已过期",
+}
 
 
 @app.route("/api/register", methods=["POST", "OPTIONS"])
