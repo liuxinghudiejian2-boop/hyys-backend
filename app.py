@@ -785,17 +785,18 @@ def api_inbox_delete():
 
 # ============================== 聊天接口 ==============================
 
+@app.route("/api/chat/partners", methods=["GET"])
+def api_chat_partners():
+    """返回有聊天记录的不同用户列表（客服用，查询哪些用户给客服发过消息）
+    注意：此路由必须放在 /api/chat/<username> 之前，避免被动态路由捕获"""
+    partners = db.get_chat_partners()
+    return jsonify({"success": True, "partners": partners})
+
+
 @app.route("/api/chat/<username>", methods=["GET"])
 def api_chat_list(username):
     """获取与某用户的聊天记录"""
     return jsonify({"success": True, "messages": db.get_chat(username)})
-
-
-@app.route("/api/chat/partners", methods=["GET"])
-def api_chat_partners():
-    """返回有聊天记录的不同用户列表（客服用，查询哪些用户给客服发过消息）"""
-    partners = db.get_chat_partners()
-    return jsonify({"success": True, "partners": partners})
 
 
 @app.route("/api/chat/<username>", methods=["POST", "OPTIONS"])
