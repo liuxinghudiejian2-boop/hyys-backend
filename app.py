@@ -791,6 +791,13 @@ def api_chat_list(username):
     return jsonify({"success": True, "messages": db.get_chat(username)})
 
 
+@app.route("/api/chat/partners", methods=["GET"])
+def api_chat_partners():
+    """返回有聊天记录的不同用户列表（客服用，查询哪些用户给客服发过消息）"""
+    partners = db.get_chat_partners()
+    return jsonify({"success": True, "partners": partners})
+
+
 @app.route("/api/chat/<username>", methods=["POST", "OPTIONS"])
 def api_chat_send(username):
     """发送消息（客服或用户均可）"""
