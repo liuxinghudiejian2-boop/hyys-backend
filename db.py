@@ -79,6 +79,16 @@ def _init_db():
         )
     """)
 
+    # 收件箱未读状态（客服最后查看收件箱的时间）
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS inbox_read_state (
+            id INTEGER PRIMARY KEY,
+            last_read_at INTEGER DEFAULT 0
+        )
+    """)
+    # 初始化（id=1 的唯一记录）
+    cur.execute("INSERT OR IGNORE INTO inbox_read_state (id, last_read_at) VALUES (1, 0)")
+
     # 确保客服账号存在
     import hashlib
 
@@ -264,6 +274,42 @@ def add_chat_message(username, sender, text, msg_time):
     conn.commit()
     conn.close()
     return msg_id
+
+
+# ============================== 收件箱未读状态 ==============================
+
+def get_inbox_last_read():
+    """获取客服上次查看收件箱的时间戳"""
+    conn = _get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT last_read_at FROM inbox_read_state WHERE id = 1")
+    row = cur.fetchone()
+    conn.close()
+    return row["last_read_at"] if row else 0
+
+
+def set_inbox_last_read(ts):
+    """更新客服查看收件箱的时间戳"""
+    conn = _get_db()
+    cur = conn.cursor()
+    cur.execute("UPDATE inbox_read_state SET last_read_at = ? WHERE id = 1", (ts,))
+    conn.commit()
+    conn.close()
+
+
+def get_inbox_unread_count():
+    """返回收件箱中 created_at > last_read_at 的条目数量"""
+    last_read = get_inbox_last_read()
+    conn = _get_db()
+    cur = conn.cursor()
+    if last_read == 0:
+        # 首次访问，返回总条目数（全部视为未读）
+        cur.execute("SELECT COUNT(*) as cnt FROM inbox")
+    else:
+        cur.execute("SELECT COUNT(*) as cnt FROM inbox WHERE created_at > ?", (last_read,))
+    row = cur.fetchone()
+    conn.close()
+    return row["cnt"] if row else 0
 
 
 # ============================== 初始化 ==============================
