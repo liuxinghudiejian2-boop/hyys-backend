@@ -276,6 +276,16 @@ def add_chat_message(username, sender, text, msg_time):
     return msg_id
 
 
+def get_chat_partners():
+    """返回 chat 表中所有不同的 username（客服用，查看哪些用户发过消息）"""
+    conn = _get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT DISTINCT username FROM chat ORDER BY username")
+    rows = cur.fetchall()
+    conn.close()
+    return [r["username"] for r in rows]
+
+
 # ============================== 收件箱未读状态 ==============================
 
 def get_inbox_last_read():
