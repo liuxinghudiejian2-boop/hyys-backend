@@ -81,6 +81,9 @@ class Config:
     PARSE_CACHE_TTL = 1800  # 30 分钟
     # 请求超时
     TIMEOUT = 15
+    # 用户清理：30天未登录自动清除
+    USER_CLEANUP_DAYS = 30
+    LAST_CLEANUP_TIME = 0  # 上次清理时间戳
 
 
 # 支持的图片扩展名
@@ -581,12 +584,29 @@ def api_img_cache():
 
 @app.route("/api/health", methods=["GET"])
 def api_health():
-    """健康检查"""
+    """健康检查 + 自动清理不活跃用户（每天最多执行一次）"""
+    _try_cleanup_users()
     return jsonify({
         "status": "ok",
         "service": "baidu-pan-parser",
         "cache_size": len(Config.PARSE_CACHE),
     })
+
+
+def _try_cleanup_users():
+    """尝试清理 30 天未登录的用户（每天最多执行一次）"""
+    import time
+    now = int(time.time())
+    # 距离上次清理不足 24 小时则跳过
+    if now - Config.LAST_CLEANUP_TIME < 86400:
+        return
+    Config.LAST_CLEANUP_TIME = now
+    try:
+        deleted = db.cleanup_inactive_users(days=Config.USER_CLEANUP_DAYS)
+        if deleted:
+            print(f"[清理] 已删除 {len(deleted)} 个不活跃用户: {', '.join(deleted)}")
+    except Exception as e:
+        print(f"[清理] 出错: {e}")
 
 
 @app.route("/api/public-ip", methods=["GET"])
@@ -648,6 +668,9 @@ def api_login():
         if users["password"] != hash_password(password):
             return jsonify({"success": False, "error": "密码错误"})
 
+        # 更新最后登录时间
+        db.update_login_time(username)
+
         return jsonify({
             "success": True,
             "role": users["role"],
@@ -662,6 +685,48 @@ def check_staff_password(data):
     """校验客服密码（图库写操作需要）"""
     pwd = data.get("password") or ""
     return pwd == STAFF_PASSWORD
+
+
+# ============================== 用户管理接口（客服用） ==============================
+
+
+@app.route("/api/users", methods=["POST", "OPTIONS"])
+def api_users_list():
+    """获取所有注册用户列表（客服，需密码验证）
+    返回每个用户的 username、role、last_login_at（时间戳）"""
+    if request.method == "OPTIONS":
+        return jsonify({"ok": True})
+    data = request.get_json(silent=True) or {}
+    if not check_staff_password(data):
+        return jsonify({"success": False, "error": "无权限：需要客服密码"})
+    users = db.get_all_users()
+    return jsonify({"success": True, "users": users})
+
+
+@app.route("/api/cleanup-users", methods=["POST", "OPTIONS"])
+def api_cleanup_users():
+    """手动触发清理不活跃用户（客服，需密码验证）
+    请求体: {"password": "客服密码"}
+    返回被删除的用户列表"""
+    if request.method == "OPTIONS":
+        return jsonify({"ok": True})
+    data = request.get_json(silent=True) or {}
+    if not check_staff_password(data):
+        return jsonify({"success": False, "error": "无权限：需要客服密码"})
+    days = data.get("days", Config.USER_CLEANUP_DAYS)
+    try:
+        deleted = db.cleanup_inactive_users(days=int(days))
+        # 更新最后清理时间
+        import time
+        Config.LAST_CLEANUP_TIME = int(time.time())
+        return jsonify({
+            "success": True,
+            "deleted": deleted,
+            "count": len(deleted),
+            "message": f"已清理 {len(deleted)} 个超过 {days} 天未登录的用户"
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
 
 
 # ============================== 图库接口 ==============================
