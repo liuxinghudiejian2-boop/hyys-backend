@@ -85,6 +85,16 @@ class Config:
     USER_CLEANUP_DAYS = 30
     LAST_CLEANUP_TIME = 0  # 上次清理时间戳
 
+    # ===== 图片代理服务端缓存（LRU）=====
+    # {key: {content, content_type, etag, ts}} 同一 URL 只回源一次
+    IMG_SERVER_CACHE = {}
+    IMG_SERVER_CACHE_MAX = 200          # 最多缓存的图片条目
+    IMG_SERVER_CACHE_TTL = 6 * 3600     # 服务端缓存有效期 6 小时
+    IMG_CACHE_HITS = 0                  # 缓存命中次数
+    IMG_CACHE_MISS = 0                  # 缓存未命中（回源）次数
+    # 单张图片代理上限（15MB），防止内存被超大图撑爆
+    IMG_MAX_BYTES = 15 * 1024 * 1024
+
 
 # 支持的图片扩展名
 IMAGE_EXTENSIONS = {
@@ -514,6 +524,51 @@ def api_proxy():
         return f"Proxy error: {e}", 500
 
 
+# ============================== 图片代理服务端缓存（LRU） ==============================
+
+def _img_cache_get(key):
+    """从服务端缓存读取图片；命中则更新 LRU 时间戳，过期则删除"""
+    entry = Config.IMG_SERVER_CACHE.get(key)
+    if not entry:
+        Config.IMG_CACHE_MISS += 1
+        return None
+    if time.time() - entry["ts"] > Config.IMG_SERVER_CACHE_TTL:
+        Config.IMG_SERVER_CACHE.pop(key, None)
+        Config.IMG_CACHE_MISS += 1
+        return None
+    # 命中：更新时间戳实现 LRU 效果
+    entry["ts"] = time.time()
+    Config.IMG_CACHE_HITS += 1
+    return entry
+
+
+def _img_cache_put(key, content, content_type):
+    """写入服务端缓存，超限时淘汰最久未访问的条目"""
+    if len(Config.IMG_SERVER_CACHE) >= Config.IMG_SERVER_CACHE_MAX:
+        # 淘汰最久未使用（ts 最小）的一条
+        old_key = min(Config.IMG_SERVER_CACHE, key=lambda k: Config.IMG_SERVER_CACHE[k]["ts"])
+        Config.IMG_SERVER_CACHE.pop(old_key, None)
+    Config.IMG_SERVER_CACHE[key] = {
+        "content": content,
+        "content_type": content_type,
+        "etag": '"%s"' % hashlib.md5(content[:8192]).hexdigest(),
+        "ts": time.time(),
+    }
+
+
+def _img_cache_stats():
+    """返回缓存统计信息"""
+    total = Config.IMG_CACHE_HITS + Config.IMG_CACHE_MISS
+    hit_rate = round(Config.IMG_CACHE_HITS / total, 3) if total else 0
+    return {
+        "entries": len(Config.IMG_SERVER_CACHE),
+        "max": Config.IMG_SERVER_CACHE_MAX,
+        "hits": Config.IMG_CACHE_HITS,
+        "miss": Config.IMG_CACHE_MISS,
+        "hit_rate": hit_rate,
+    }
+
+
 @app.route("/api/img-cache", methods=["GET"])
 def api_img_cache():
     """
@@ -543,24 +598,71 @@ def api_img_cache():
         "i.ibb.co",
         "sm.ms",
         "litter.catbox.moe",
+        "postimg.cc",
+        "i.postimg.cc",
+        "img.vim-cn.com",
+        "upload.cc",
+        "0x0.st",
+        "tmpfiles.org",
+        "imgur.com",
     )
     if not any(parsed.hostname and parsed.hostname.endswith(d) for d in allowed_domains):
         return f"Forbidden: domain not allowed -> {parsed.hostname}", 403
 
+    # 服务端缓存 key：基于目标 URL
+    cache_key = "img:" + hashlib.md5(target_url.encode()).hexdigest()
+
+    # 优先命中服务端缓存，避免重复回源
+    cached = _img_cache_get(cache_key)
+    if cached:
+        etag = cached["etag"]
+        # 支持条件请求：浏览器带 If-None-Match 时返回 304
+        if request.headers.get("If-None-Match") == etag:
+            resp304 = Response(status=304)
+            resp304.headers["Cache-Control"] = f"public, max-age={Config.IMAGE_CACHE_TIME}"
+            resp304.headers["Access-Control-Allow-Origin"] = "*"
+            resp304.headers["ETag"] = etag
+            return resp304
+        response = Response(
+            cached["content"],
+            content_type=cached["content_type"],
+        )
+        response.headers["Cache-Control"] = f"public, max-age={Config.IMAGE_CACHE_TIME}"
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["ETag"] = etag
+        response.headers["X-Cache"] = "HIT"
+        return response
+
     try:
         session = create_session()
         # 增加超时，避免大图卡死
-        resp = session.get(target_url, timeout=Config.TIMEOUT)
+        resp = session.get(target_url, timeout=Config.TIMEOUT, stream=True)
+        resp.close()
 
         if resp.status_code != 200:
             return f"Failed to fetch image: HTTP {resp.status_code}", 502
 
         content_type = resp.headers.get("Content-Type", "image/jpeg")
-        content = resp.content
+
+        # 流式读取，并限制大小（防止超大图拖垮内存）
+        chunks = []
+        total = 0
+        for chunk in resp.iter_content(chunk_size=8192):
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > Config.IMG_MAX_BYTES:
+                resp.close()
+                return "Image too large", 413
+            chunks.append(chunk)
         resp.close()
+        content = b"".join(chunks)
 
         if not content:
             return "Empty image data", 502
+
+        # 写入服务端缓存，后续请求直接命中
+        _img_cache_put(cache_key, content, content_type)
 
         response = Response(
             content,
@@ -570,10 +672,9 @@ def api_img_cache():
         response.headers["Cache-Control"] = f"public, max-age={Config.IMAGE_CACHE_TIME}"
         response.headers["Access-Control-Allow-Origin"] = "*"
         # ETag 用于条件请求（304 Not Modified）
-        import hashlib as _hl
-        etag = _hl.md5(content[:8192]).hexdigest()
-        response.headers["ETag"] = f'"{etag}"'
-
+        etag = '"%s"' % hashlib.md5(content[:8192]).hexdigest()
+        response.headers["ETag"] = etag
+        response.headers["X-Cache"] = "MISS"
         return response
     except requests.exceptions.Timeout:
         return "Proxy timeout", 504
@@ -590,6 +691,7 @@ def api_health():
         "status": "ok",
         "service": "baidu-pan-parser",
         "cache_size": len(Config.PARSE_CACHE),
+        "img_cache": _img_cache_stats(),
     })
 
 
@@ -899,57 +1001,87 @@ IMGBB_WORKER_URL = os.environ.get(
 def _try_upload_image(image_b64):
     """
     尝试多个图床上传，返回第一个成功的 URL。
-    优先级: Catbox > Freeimage > ImgBB Worker
+    优先级: Catbox > Freeimage > 0x0.st > ImgBB Worker
+    所有返回的 URL 域名均已在 /api/img-cache 白名单内，可被代理加载。
     """
+    import base64
+    img_data = None
+    try:
+        img_data = base64.b64decode(image_b64 + "==")
+    except Exception:
+        img_data = base64.b64decode(image_b64)
+
+    def _post_upload(url, files=None, data=None, json_data=None):
+        """统一的上传请求封装，返回 (成功标志, url 或错误)"""
+        try:
+            if json_data is not None:
+                resp = requests.post(url, json=json_data, timeout=30)
+            else:
+                resp = requests.post(url, files=files, data=data, timeout=30)
+            return True, resp
+        except Exception as e:
+            print(f"[上传] 请求异常 {url}: {e}")
+            return False, None
+
     # --- 方法1: Catbox (无需认证，200MB 限制) ---
     try:
-        import base64
-        img_data = base64.b64decode(image_b64 + "==")
-        resp = requests.post(
+        ok, resp = _post_upload(
             "https://catbox.moe/user/api.php",
             files={"fileToUpload": ("image.png", img_data, "image/png")},
             data={"reqtype": "fileupload"},
-            timeout=30,
         )
-        url = resp.text.strip()
-        if url.startswith("https://"):
-            print(f"[上传] Catbox 成功: {url[:60]}")
-            return url
+        if ok:
+            url = resp.text.strip()
+            if url.startswith("https://") and "catbox.moe" in url:
+                print(f"[上传] Catbox 成功: {url[:60]}")
+                return url
     except Exception as e:
         print(f"[上传] Catbox 失败: {e}")
 
     # --- 方法2: Freeimage (匿名 key=free) ---
     try:
-        import base64
-        img_data = base64.b64decode(image_b64 + "==")
-        resp = requests.post(
+        ok, resp = _post_upload(
             "https://freeimage.host/api/1/upload",
             files={"source": ("image.png", img_data, "image/png")},
             data={"key": "free"},
-            timeout=30,
         )
-        result = resp.json()
-        if result.get("status_code") == 200:
-            url = result.get("image", {}).get("url") or result.get("url", "")
-            if url:
-                print(f"[上传] Freeimage 成功: {url[:60]}")
-                return url
+        if ok:
+            result = resp.json()
+            if result.get("status_code") == 200:
+                url = result.get("image", {}).get("url") or result.get("url", "")
+                if url:
+                    print(f"[上传] Freeimage 成功: {url[:60]}")
+                    return url
     except Exception as e:
         print(f"[上传] Freeimage 失败: {e}")
 
-    # --- 方法3: Cloudflare Worker -> ImgBB (作为最后兜底) ---
+    # --- 方法3: 0x0.st (匿名，无需认证，上限 512MB，保留 30 天) ---
     try:
-        resp = requests.post(
-            IMGBB_WORKER_URL,
-            data={"image": image_b64},
-            timeout=30,
+        ok, resp = _post_upload(
+            "https://0x0.st",
+            files={"file": ("image.png", img_data, "image/png")},
         )
-        result = resp.json()
-        if result.get("success"):
-            url = result.get("data", {}).get("url", "")
-            if url:
-                print(f"[上传] ImgBB 成功: {url[:60]}")
+        if ok:
+            url = resp.text.strip()
+            if url.startswith("https://") and "0x0.st" in url:
+                print(f"[上传] 0x0.st 成功: {url[:60]}")
                 return url
+    except Exception as e:
+        print(f"[上传] 0x0.st 失败: {e}")
+
+    # --- 方法4: Cloudflare Worker -> ImgBB (作为最后兜底) ---
+    try:
+        ok, resp = _post_upload(
+            IMGBB_WORKER_URL,
+            json_data={"image": image_b64},
+        )
+        if ok:
+            result = resp.json()
+            if result.get("success"):
+                url = result.get("data", {}).get("url", "")
+                if url:
+                    print(f"[上传] ImgBB 成功: {url[:60]}")
+                    return url
     except Exception as e:
         print(f"[上传] ImgBB 失败: {e}")
 
