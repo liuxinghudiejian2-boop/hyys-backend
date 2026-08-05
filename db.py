@@ -231,7 +231,7 @@ def add_gallery_item(item):
         """INSERT INTO gallery
            (id, title, s, grad, url, srcTag, ratio, nickname, tags, intro,
             height, age, job, hobby, bwh, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", pg),
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", pg),
         (
             item.get("id"), item.get("title", "美图"), item.get("s", "美图"),
             int(item.get("grad", 0)), item.get("url", ""), item.get("srcTag", ""),
