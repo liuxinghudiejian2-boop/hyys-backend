@@ -1001,8 +1001,14 @@ IMGBB_WORKER_URL = os.environ.get(
 def _try_upload_image(image_b64):
     """
     尝试多个图床上传，返回第一个成功的 URL。
-    优先级: Catbox > Freeimage > 0x0.st > ImgBB Worker
-    所有返回的 URL 域名均已在 /api/img-cache 白名单内，可被代理加载。
+    优先级: ImgBB Worker > Catbox > Freeimage > 0x0.st
+
+    说明：
+      - ImgBB Worker 为第一优先：经 Cloudflare Worker 中转上传（绕开 Render IP
+        被 ImgBB 封禁），返回的 i.ibb.co 下载域名对 Render 可访问且可被
+        /api/img-cache 代理正常拉取（已实测验证）。
+      - Catbox 上传稳定但下载域名 files.catbox.moe 对 Render 数据中心 IP 被拒，
+        故降为备份（其 URL 代理可能拉取失败）。
     """
     import base64
     img_data = None
@@ -1023,7 +1029,23 @@ def _try_upload_image(image_b64):
             print(f"[上传] 请求异常 {url}: {e}")
             return False, None
 
-    # --- 方法1: Catbox (无需认证，200MB 限制) ---
+    # --- 方法1: Cloudflare Worker -> ImgBB (最可靠链路，第一优先) ---
+    try:
+        ok, resp = _post_upload(
+            IMGBB_WORKER_URL,
+            data={"image": image_b64},  # Worker 只接受 form 格式（multipart 或 urlencoded），不接受 JSON
+        )
+        if ok:
+            result = resp.json()
+            if result.get("success"):
+                url = result.get("data", {}).get("url", "")
+                if url:
+                    print(f"[上传] ImgBB 成功: {url[:60]}")
+                    return url
+    except Exception as e:
+        print(f"[上传] ImgBB 失败: {e}")
+
+    # --- 方法2: Catbox (无需认证，200MB 限制) ---
     try:
         ok, resp = _post_upload(
             "https://catbox.moe/user/api.php",
@@ -1038,7 +1060,7 @@ def _try_upload_image(image_b64):
     except Exception as e:
         print(f"[上传] Catbox 失败: {e}")
 
-    # --- 方法2: Freeimage (匿名 key=free) ---
+    # --- 方法3: Freeimage (匿名 key=free) ---
     try:
         ok, resp = _post_upload(
             "https://freeimage.host/api/1/upload",
@@ -1055,7 +1077,7 @@ def _try_upload_image(image_b64):
     except Exception as e:
         print(f"[上传] Freeimage 失败: {e}")
 
-    # --- 方法3: 0x0.st (匿名，无需认证，上限 512MB，保留 30 天) ---
+    # --- 方法4: 0x0.st (匿名，无需认证，上限 512MB，保留 30 天) ---
     try:
         ok, resp = _post_upload(
             "https://0x0.st",
@@ -1068,22 +1090,6 @@ def _try_upload_image(image_b64):
                 return url
     except Exception as e:
         print(f"[上传] 0x0.st 失败: {e}")
-
-    # --- 方法4: Cloudflare Worker -> ImgBB (作为最后兜底) ---
-    try:
-        ok, resp = _post_upload(
-            IMGBB_WORKER_URL,
-            data={"image": image_b64},  # Worker 只接受 form 格式（multipart 或 urlencoded），不接受 JSON
-        )
-        if ok:
-            result = resp.json()
-            if result.get("success"):
-                url = result.get("data", {}).get("url", "")
-                if url:
-                    print(f"[上传] ImgBB 成功: {url[:60]}")
-                    return url
-    except Exception as e:
-        print(f"[上传] ImgBB 失败: {e}")
 
     return None
 
