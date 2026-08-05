@@ -637,9 +637,9 @@ def api_img_cache():
         session = create_session()
         # 增加超时，避免大图卡死
         resp = session.get(target_url, timeout=Config.TIMEOUT, stream=True)
-        resp.close()
 
         if resp.status_code != 200:
+            resp.close()
             return f"Failed to fetch image: HTTP {resp.status_code}", 502
 
         content_type = resp.headers.get("Content-Type", "image/jpeg")
@@ -1073,7 +1073,7 @@ def _try_upload_image(image_b64):
     try:
         ok, resp = _post_upload(
             IMGBB_WORKER_URL,
-            json_data={"image": image_b64},
+            data={"image": image_b64},  # Worker 只接受 form 格式（multipart 或 urlencoded），不接受 JSON
         )
         if ok:
             result = resp.json()
