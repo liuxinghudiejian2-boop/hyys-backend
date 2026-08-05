@@ -205,7 +205,7 @@ def _init_db():
         "UPDATE users SET last_login_at = %s WHERE username = %s AND (last_login_at IS NULL OR last_login_at = 0)" if is_pg
         else "UPDATE users SET last_login_at = strftime('%s','now') WHERE username = ? AND (last_login_at IS NULL OR last_login_at = 0)",
         is_pg,
-    ), (staff_account,) if is_pg else (staff_account,))
+    ), (_now(), staff_account) if is_pg else (staff_account,))
 
     _commit(conn, is_pg)
     _close(conn, is_pg)
