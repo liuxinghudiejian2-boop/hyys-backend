@@ -992,6 +992,11 @@ def api_user_likes(username):
 
 # ============================== ImgBB 上传中转 ==============================
 
+IMGBB_API_KEY = os.environ.get(
+    "IMGBB_API_KEY",
+    "46da64c4ed5006f1c007a094443c650d"
+)
+
 IMGBB_WORKER_URL = os.environ.get(
     "IMGBB_WORKER_URL",
     "https://imgbb-proxy.imgbb-proxy.workers.dev"
@@ -1001,12 +1006,13 @@ IMGBB_WORKER_URL = os.environ.get(
 def _try_upload_image(image_b64):
     """
     尝试多个图床上传，返回第一个成功的 URL。
-    优先级: ImgBB Worker > Catbox > Freeimage > 0x0.st
+    优先级: ImgBB直连 > ImgBB Worker > Catbox > Freeimage > 0x0.st
 
     说明：
-      - ImgBB Worker 为第一优先：经 Cloudflare Worker 中转上传（绕开 Render IP
-        被 ImgBB 封禁），返回的 i.ibb.co 下载域名对 Render 可访问且可被
-        /api/img-cache 代理正常拉取（已实测验证）。
+      - ImgBB 直连为第一优先：api.imgbb.com 国内可访问，直接上传返回
+        i.ibb.co 下载域名，可被 /api/img-cache 代理正常拉取。
+      - Cloudflare Worker（*.workers.dev 域名）在国内被墙，超时后回退直连，
+        故 Worker 仅作第二优先备用。
       - Catbox 上传稳定但下载域名 files.catbox.moe 对 Render 数据中心 IP 被拒，
         故降为备份（其 URL 代理可能拉取失败）。
     """
@@ -1029,7 +1035,37 @@ def _try_upload_image(image_b64):
             print(f"[上传] 请求异常 {url}: {e}")
             return False, None
 
-    # --- 方法1: Cloudflare Worker -> ImgBB (最可靠链路，第一优先) ---
+    # --- 方法1: ImgBB 直连 API (第一优先，api.imgbb.com 国内可访问) ---
+    try:
+        ok, resp = _post_upload(
+            "https://api.imgbb.com/1/upload",
+            data={"key": IMGBB_API_KEY, "image": image_b64},
+        )
+        if ok:
+            try:
+                result = resp.json()
+            except Exception:
+                result = None
+            if result and result.get("success"):
+                url = (
+                    result.get("data", {}).get("url", "")
+                    or result.get("data", {}).get("display_url", "")
+                )
+                if url:
+                    print(f"[上传] ImgBB 直连成功: {url[:60]}")
+                    return url
+                else:
+                    print(f"[上传] ImgBB 直连: 返回无 url")
+            else:
+                code = (result or {}).get("status_code")
+                if code == 103:
+                    print("[上传] ImgBB 直连: code 103 (IP 被封)，尝试 Worker")
+                else:
+                    print(f"[上传] ImgBB 直连失败: {str(result)[:120]}")
+    except Exception as e:
+        print(f"[上传] ImgBB 直连异常: {e}")
+
+    # --- 方法2: Cloudflare Worker -> ImgBB (备用，*.workers.dev 在国内被墙) ---
     try:
         ok, resp = _post_upload(
             IMGBB_WORKER_URL,
@@ -1040,12 +1076,12 @@ def _try_upload_image(image_b64):
             if result.get("success"):
                 url = result.get("data", {}).get("url", "")
                 if url:
-                    print(f"[上传] ImgBB 成功: {url[:60]}")
+                    print(f"[上传] ImgBB Worker 成功: {url[:60]}")
                     return url
     except Exception as e:
-        print(f"[上传] ImgBB 失败: {e}")
+        print(f"[上传] ImgBB Worker 失败: {e}")
 
-    # --- 方法2: Catbox (无需认证，200MB 限制) ---
+    # --- 方法3: Catbox (无需认证，200MB 限制) ---
     try:
         ok, resp = _post_upload(
             "https://catbox.moe/user/api.php",
@@ -1060,7 +1096,7 @@ def _try_upload_image(image_b64):
     except Exception as e:
         print(f"[上传] Catbox 失败: {e}")
 
-    # --- 方法3: Freeimage (匿名 key=free) ---
+    # --- 方法4: Freeimage (匿名 key=free) ---
     try:
         ok, resp = _post_upload(
             "https://freeimage.host/api/1/upload",
@@ -1077,7 +1113,7 @@ def _try_upload_image(image_b64):
     except Exception as e:
         print(f"[上传] Freeimage 失败: {e}")
 
-    # --- 方法4: 0x0.st (匿名，无需认证，上限 512MB，保留 30 天) ---
+    # --- 方法5: 0x0.st (匿名，无需认证，上限 512MB，保留 30 天) ---
     try:
         ok, resp = _post_upload(
             "https://0x0.st",
