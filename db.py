@@ -20,10 +20,14 @@ DB_PATH = os.path.join(BASE_DIR, "app.db")
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 USE_POSTGRES = bool(DATABASE_URL)
 
-_lock = threading.Lock()
+# 线程局部存储：每个线程持有独立数据库连接。
+# Flask 默认多线程处理请求，共享单连接会因并发使用同一 cursor 产生数据竞争。
+# 用 thread-local 为每个线程维护独立连接，最稳健且无锁竞争。
+_local = threading.local()
 
-# psycopg2 连接池（懒加载）
-_pg_conn = None
+# 数据库请求超时（PostgreSQL 用）——防止极端情况下连接卡死
+_PG_CONNECT_TIMEOUT = 15
+_PG_OPERATION_TIMEOUT = 30
 
 
 def _now():
@@ -39,14 +43,30 @@ def _hash_password(pwd):
 # ============================== 连接管理 ==============================
 
 def _get_db():
-    """获取数据库连接（线程安全）。返回 (conn, is_postgres)"""
+    """获取当前线程的数据库连接（线程安全）。
+
+    返回 (conn, is_postgres)。
+    PostgreSQL 用 thread-local 复用连接（每个线程一个，自动回滚坏事务）；
+    SQLite 每次新建连接（其写锁特性不适合跨线程复用）。
+    """
     if USE_POSTGRES:
         import psycopg2
-        global _pg_conn
-        if _pg_conn is None or _pg_conn.closed:
-            _pg_conn = psycopg2.connect(DATABASE_URL)
-            _pg_conn.autocommit = False
-        return _pg_conn, True
+        conn = getattr(_local, "pg_conn", None)
+        if conn is None or conn.closed:
+            conn = psycopg2.connect(
+                DATABASE_URL,
+                connect_timeout=_PG_CONNECT_TIMEOUT,
+            )
+            conn.autocommit = False
+            _local.pg_conn = conn
+        else:
+            # 若上一请求遗留了未提交/已中断的事务，先回滚保证干净状态
+            try:
+                if conn.info.transaction_status != 0:  # 0 = IDLE
+                    conn.rollback()
+            except Exception:
+                pass
+        return conn, True
     else:
         import sqlite3
         conn = sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -66,11 +86,20 @@ def _sql(query, is_pg):
 
 
 def _commit(conn, is_pg):
-    conn.commit()
+    try:
+        conn.commit()
+    except Exception:
+        # 提交失败时回滚，避免脏事务残留
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
 
 
 def _close(conn, is_pg):
-    # PostgreSQL 复用连接；SQLite 每次关闭
+    # PostgreSQL 复用线程连接（不关闭，交给 thread-local 复用）；
+    # SQLite 每次用完关闭。
     if not is_pg:
         conn.close()
 
